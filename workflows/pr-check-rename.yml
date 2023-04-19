@@ -1,0 +1,103 @@
+name: PR check rename
+run-name: PR check rename ${{github.run_number}}
+on:
+  #synchronizeはprに新しいコミットがpushされたときに発火
+  #add_imageブランチに画像が追加されたときに発火
+  pull_request:
+    types: [ opened, synchronize, reopened ]
+    branches:
+      - master
+      #ブランチ先のvalidation(masterブランチにプルリクしたら発動)
+
+jobs:
+  check-rename:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 2
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
+      # マージ元が正しい(add-image)か調べる
+      - name: if correct Source Branch
+        id: correct_branch
+        if: startsWith(github.head_ref, 'add-image')
+        run: echo "from add-image PR ok!✅"
+      - name: else Source Branch
+        if: steps.correct_branch.conclusion == 'skipped'
+        run: |
+          echo 'skipped'
+          echo '::error::add-imageブランチから画像を追加してください'
+          exit 1
+
+      - name: ls1
+        run: ls
+      - name: show branch name
+        run: echo "${{github.head_ref}}"
+
+      # - run: echo "github context ${{toJson(github)}}"
+
+      # file_blacklist.txtでファイルの除外処理を行っている
+      # [20230101]len()=8に従っているか確認，拡張子は確認しない
+      # ifのne(数字比較)は等しくなかったら真
+      - name: 🚨check file format
+        run: |
+          not_formated_file="$(find . -maxdepth 1 -type f | grep -v -f file_blacklist.txt | grep -v -E '^.\/[0-9]{7,8}.\w{3,4}')"
+          echo -e "\e[34m${not_formated_file}\e[m"
+          not_formated_file_len=($(echo "$not_formated_file" | grep . | wc -l))
+          echo -e "\e[34m${not_formated_file_len}\e[m"
+
+          if [ $not_formated_file_len -ne 0 ]; then
+            echo "::error::[20230101]のようなフォーマットになっていないやつがある"
+            echo "::error::not formated file length: ${not_formated_file_len}"
+            echo "::error::error files:"
+            echo "::error::${not_formated_file}"
+            exit 1
+          else
+            echo 'file check ok!'
+          fi
+        shell: bash -x {0}
+      # 標準ではset -eされており，grepで一致しなかったらerror1が出るので，eを外す
+
+      # 拡張子を変更する
+      # [20230101]のようなフォーマットに従った.png以外の拡張子をpngにする
+      # 変更する拡張子があった場合，ifでPRにcommitする
+      - name: ♻change filename ext
+        id: ext
+        run: |
+          change_filename_ext="$(find . -type f | grep -E '^.\/[0-9]{7,8}.\w{3,4}' | grep -v ".png" | sed -E -e 'p;s/.\w{3,4}$/.png/' | xargs -n 2 echo)"
+          echo -e "\e[34m${change_filename_ext}\e[m"
+          change_filename_ext_len=($(echo "$change_filename_ext" | grep . | wc -l))
+          echo -e "\e[34m${change_filename_ext_len}\e[m"
+
+          echo "change_filename_ext_len2=$change_filename_ext_len" >> $GITHUB_ENV
+
+          if [ $change_filename_ext_len -ne 0 ]; then
+            find . -type f | grep -E '^.\/[0-9]{7,8}.\w{3,4}' | grep -v ".png" | sed -E -e 'p;s/.\w{3,4}$/.png/' | xargs -n 2 mv
+          else
+            echo "✅file ext check is OK!"
+          fi
+
+        shell: bash -x {0}
+
+      - name: ls2
+        run: ls
+
+      - name: 🚀if rename; git push!
+        run: |
+          echo -e "\e[34m${{ env.change_filename_ext_len2 }}\e[m"
+          if [ ${{ env.change_filename_ext_len2 }} -ne 0 ]; then
+            echo "0じゃない"
+
+            git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git config --global user.name "github-actions[bot]"
+            git fetch
+            git branch -a
+            git checkout ${{github.head_ref}}
+            git add .
+            git commit -m "🦾auto renamefile (${{github.run_number}})"
+            git push -u origin HEAD:${{github.head_ref}}
+          else
+            echo "✅file ext check is OK!"
+          fi
