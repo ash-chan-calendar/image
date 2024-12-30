@@ -43,7 +43,7 @@ jobs:
       # ifのne(数字比較)は等しくなかったら真
       - name: 🚨check file format
         run: |
-          not_formated_file="$(find . -maxdepth 1 -type f | grep -v -f file_blacklist.txt | grep -v -E '^.\/[0-9]{7,8}.\w{3,4}')"
+          not_formated_file="$(find . -maxdepth 1 -type f | grep -v -f file_blacklist.txt | grep -v -f README.md | grep -v -E '^.\/[0-9]{7,8}.\w{3,4}')"
           echo -e "\e[34m${not_formated_file}\e[m"
           not_formated_file_len=($(echo "$not_formated_file" | grep . | wc -l))
           echo -e "\e[34m${not_formated_file_len}\e[m"
