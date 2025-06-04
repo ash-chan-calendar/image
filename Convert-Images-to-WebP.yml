@@ -1,0 +1,209 @@
+name: Convert Images to WebP
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (preview only)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  convert-to-webp:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # リポジトリをチェックアウト（add-imageブランチ）
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: add-image
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ImageMagickをインストール（画像変換ツール）
+      - name: Install ImageMagick
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+
+      # 必要なディレクトリを作成
+      - name: Create directories
+        run: |
+          mkdir -p image/webp
+          mkdir -p image/png
+
+      # 画像をWebP形式に変換するメイン処理
+      - name: Convert images to WebP
+        id: convert-to-webp
+        run: |
+          #!/bin/bash
+          set -e
+          
+          # 設定変数
+          SOURCE_DIR="image/png"        # 変換元ディレクトリ
+          OUTPUT_DIR="image/webp"       # 変換先ディレクトリ
+          BLACKLIST_FILE="image/file_blacklist.txt"  # 除外ファイルリスト
+          QUALITY=70                    # 画質設定（70%）
+          MAX_SIZE=2097152              # 最大ファイルサイズ（2MB）
+          
+          # ログ出力関数
+          log() {
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+          }
+          
+          # ブラックリストチェック関数
+          is_blacklisted() {
+            local file="$1"
+            if [[ -f "$BLACKLIST_FILE" ]]; then
+              if grep -Fxq "$file" "$BLACKLIST_FILE"; then
+                return 0  # ブラックリストに含まれている
+              fi
+            fi
+            return 1  # ブラックリストに含まれていない
+          }
+          
+          # 画像変換実行関数
+          convert_image() {
+            local input_file="$1"
+            local filename=$(basename "$input_file")
+            local name_without_ext="${filename%.*}"
+            local output_file="$OUTPUT_DIR/${name_without_ext}.webp"
+            
+            log "Converting: $input_file -> $output_file"
+            
+            # 指定した画質でWebP変換を実行
+            if ! magick "$input_file" -quality $QUALITY "$output_file"; then
+              log "ERROR: Failed to convert $input_file"
+              return 1
+            fi
+            
+            # ファイルサイズチェックと画質調整
+            local file_size=$(stat -c%s "$output_file")
+            local current_quality=$QUALITY
+            
+            # 2MBを超える場合は画質を下げて再変換
+            while [[ $file_size -gt $MAX_SIZE && $current_quality -gt 30 ]]; do
+              current_quality=$((current_quality - 10))
+              log "File too large (${file_size} bytes), reducing quality to ${current_quality}%"
+              
+              if ! magick "$input_file" -quality $current_quality "$output_file"; then
+                log "ERROR: Failed to re-convert $input_file with quality ${current_quality}%"
+                return 1
+              fi
+              
+              file_size=$(stat -c%s "$output_file")
+            done
+            
+            log "Converted successfully: ${filename} (${file_size} bytes, ${current_quality}% quality)"
+            return 0
+          }
+          
+          # メイン変換処理
+          converted_count=0
+          error_count=0
+          
+          log "Starting WebP conversion process..."
+          log "Source directory: $SOURCE_DIR"
+          log "Output directory: $OUTPUT_DIR"
+          log "Quality setting: $QUALITY%"
+          log "Max file size: $MAX_SIZE bytes"
+          
+          # ソースディレクトリの存在確認
+          if [[ ! -d "$SOURCE_DIR" ]]; then
+            log "ERROR: Source directory $SOURCE_DIR does not exist"
+            exit 1
+          fi
+          
+          # 画像ファイルを検索して処理
+          while IFS= read -r -d '' file; do
+            filename=$(basename "$file")
+            
+            # ブラックリストチェック
+            if is_blacklisted "$filename"; then
+              log "SKIPPED: $filename (blacklisted)"
+              continue
+            fi
+            
+            # 既にWebP形式のファイルはスキップ
+            if [[ "$filename" =~ \.(webp)$ ]]; then
+              log "SKIPPED: $filename (already WebP)"
+              continue
+            fi
+            
+            # 出力ファイルが既に存在する場合はスキップ
+            name_without_ext="${filename%.*}"
+            output_file="$OUTPUT_DIR/${name_without_ext}.webp"
+            
+            if [[ -f "$output_file" ]]; then
+              log "SKIPPED: $filename (output already exists)"
+              continue
+            fi
+            
+            # 変換処理またはドライラン
+            if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+              log "DRY RUN: Would convert $file"
+              converted_count=$((converted_count + 1))
+            else
+              if convert_image "$file"; then
+                converted_count=$((converted_count + 1))
+              else
+                error_count=$((error_count + 1))
+              fi
+            fi
+            
+          done < <(find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" \) -print0)
+          
+          log "Conversion completed!"
+          log "Files converted: $converted_count"
+          log "Errors: $error_count"
+          
+          # 次のステップで使用するための出力設定
+          echo "converted_count=$converted_count" >> $GITHUB_OUTPUT
+          echo "error_count=$error_count" >> $GITHUB_OUTPUT
+
+      # 変換結果をコミット・プッシュ（ドライランでない場合のみ）
+      - name: Commit and push changes
+        if: ${{ inputs.dry_run != 'true' }}
+        run: |
+          # Gitの設定
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # 変更があった場合のみコミット・プッシュ
+          if [[ -n $(git status --porcelain) ]]; then
+            git add image/webp/
+            git commit -m "feat: Convert images to WebP format
+            
+            - Converted ${{ steps.convert-to-webp.outputs.converted_count }} images
+            - Quality: 70%
+            - Max size: 2MB per file"
+            
+            git push
+            echo "Changes committed and pushed successfully"
+          else
+            echo "No changes to commit"
+          fi
+
+      # 実行結果のサマリーを作成
+      - name: Create summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          # WebP Conversion Results
+          
+          ## Summary
+          - **Files converted**: ${{ steps.convert-to-webp.outputs.converted_count }}
+          - **Errors**: ${{ steps.convert-to-webp.outputs.error_count }}
+          - **Quality setting**: 70%
+          - **Max file size**: 2MB
+          - **Dry run**: ${{ inputs.dry_run }}
+          
+          ## Settings Used
+          - Source directory: \`image/png/\`
+          - Output directory: \`image/webp/\`
+          - Blacklist file: \`image/file_blacklist.txt\`
+          
+          EOF
