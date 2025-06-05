@@ -1,4 +1,5 @@
 name: Convert Images to WebP
+run-name: Convert Images to WebP ${{github.run_number}}
 
 on:
   workflow_dispatch:
@@ -15,13 +16,14 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    timeout-minutes: 10
 
     steps:
-      # リポジトリをチェックアウト（add-imageブランチ）
+      # リポジトリをチェックアウト（dev-webpブランチ）
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: add-image
+          ref: dev-webp
           token: ${{ secrets.GITHUB_TOKEN }}
 
       # ImageMagickをインストール（画像変換ツール）
@@ -59,7 +61,8 @@ jobs:
           is_blacklisted() {
             local file="$1"
             if [[ -f "$BLACKLIST_FILE" ]]; then
-              if grep -Fxq "$file" "$BLACKLIST_FILE"; then
+              # ファイル名のみでチェック（パス付きの場合も対応）
+              if grep -Fxq "$file" "$BLACKLIST_FILE" || grep -Fxq "./$file" "$BLACKLIST_FILE"; then
                 return 0  # ブラックリストに含まれている
               fi
             fi
@@ -114,8 +117,12 @@ jobs:
           
           # ソースディレクトリの存在確認
           if [[ ! -d "$SOURCE_DIR" ]]; then
-            log "ERROR: Source directory $SOURCE_DIR does not exist"
-            exit 1
+            log "WARNING: Source directory $SOURCE_DIR does not exist, creating it..."
+            mkdir -p "$SOURCE_DIR"
+            log "No files to convert in $SOURCE_DIR"
+            echo "converted_count=0" >> $GITHUB_OUTPUT
+            echo "error_count=0" >> $GITHUB_OUTPUT
+            exit 0
           fi
           
           # 画像ファイルを検索して処理
@@ -155,7 +162,7 @@ jobs:
               fi
             fi
             
-          done < <(find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" \) -print0)
+          done < <(find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" \) -print0 2>/dev/null || true)
           
           log "Conversion completed!"
           log "Files converted: $converted_count"
@@ -167,43 +174,51 @@ jobs:
 
       # 変換結果をコミット・プッシュ（ドライランでない場合のみ）
       - name: Commit and push changes
-        if: ${{ inputs.dry_run != 'true' }}
+        if: ${{ inputs.dry_run != 'true' && steps.convert-to-webp.outputs.converted_count > 0 }}
         run: |
-          # Gitの設定
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          # Gitの設定（github-actions[bot]を使用）
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
           
           # 変更があった場合のみコミット・プッシュ
           if [[ -n $(git status --porcelain) ]]; then
             git add image/webp/
-            git commit -m "feat: Convert images to WebP format
+            git commit -m "🎨 Convert images to WebP format (#${{github.run_number}})
             
             - Converted ${{ steps.convert-to-webp.outputs.converted_count }} images
-            - Quality: 70%
-            - Max size: 2MB per file"
+            - Quality: 70% (auto-adjusted if needed)
+            - Max size: 2MB per file
+            - Errors: ${{ steps.convert-to-webp.outputs.error_count }}"
             
-            git push
-            echo "Changes committed and pushed successfully"
+            git push -u origin dev-webp
+            echo "✅ Changes committed and pushed successfully to dev-webp branch"
           else
-            echo "No changes to commit"
+            echo "ℹ️ No changes to commit"
           fi
 
       # 実行結果のサマリーを作成
       - name: Create summary
         run: |
           cat >> $GITHUB_STEP_SUMMARY << EOF
-          # WebP Conversion Results
+          # 🎨 WebP Conversion Results
           
           ## Summary
           - **Files converted**: ${{ steps.convert-to-webp.outputs.converted_count }}
           - **Errors**: ${{ steps.convert-to-webp.outputs.error_count }}
-          - **Quality setting**: 70%
+          - **Quality setting**: 70% (initial)
           - **Max file size**: 2MB
           - **Dry run**: ${{ inputs.dry_run }}
+          - **Branch**: dev-webp
           
           ## Settings Used
-          - Source directory: \`image/png/\`
-          - Output directory: \`image/webp/\`
-          - Blacklist file: \`image/file_blacklist.txt\`
+          - **Source directory**: \`image/png/\`
+          - **Output directory**: \`image/webp/\`
+          - **Blacklist file**: \`image/file_blacklist.txt\`
+          - **Supported formats**: JPG, JPEG, PNG, GIF → WebP
+          
+          ## Technical Details
+          - **Conversion command**: \`magick input -quality 70 output.webp\`
+          - **Size optimization**: Quality reduced by 10% steps if file > 2MB
+          - **Minimum quality**: 30%
           
           EOF
